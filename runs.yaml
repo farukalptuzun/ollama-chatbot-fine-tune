@@ -1,0 +1,11 @@
+E01:
+  tokenizer: unigram
+  vocab_size: 64000
+  seq_len: 4096
+  lr_schedule: cosine
+  peak_lr: 3e-4
+  warmup_ratio: 0.02
+  weight_decay: 0.1
+  rope_scaling: null
+  tokens_per_step: 1048576
+
