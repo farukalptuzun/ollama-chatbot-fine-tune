@@ -210,10 +210,10 @@ def calculate_f1_score(model, tokenizer, test_dataset, max_samples: int = 100):
 def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer, model, initial_state_dict, max_train_samples=None, max_val_samples=None):
     """Optuna objective fonksiyonu - her trial için eğitim yapar ve metrikleri döner"""
     
-    # Hiperparametre önerileri
+    # Hiperparametre önerileri (79GB VRAM için optimize edilmiş - daha büyük batch'ler)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-    batch_size = trial.suggest_categorical("batch_size", [1, 2, 4])
-    gradient_accumulation_steps = trial.suggest_int("gradient_accumulation_steps", 1, 8)
+    batch_size = trial.suggest_categorical("batch_size", [4, 8, 16])  # 79GB VRAM ile daha büyük batch'ler
+    gradient_accumulation_steps = trial.suggest_int("gradient_accumulation_steps", 1, 16)  # Daha yüksek aralık
     warmup_ratio = trial.suggest_float("warmup_ratio", 0.01, 0.1)
     weight_decay = trial.suggest_float("weight_decay", 0.01, 0.3)
     seq_len = trial.suggest_categorical("seq_len", [2048, 4096, 8192])
@@ -250,6 +250,17 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer, m
         if hasattr(model, 'gradient_checkpointing_enable'):
             model.gradient_checkpointing_enable()
         
+        # Model compile (PyTorch 2.0+ - GPU kullanımını optimize eder, %10-20 hızlanma)
+        try:
+            if hasattr(torch, 'compile'):
+                model = torch.compile(model, mode="reduce-overhead")  # GPU optimizasyonu
+                print(f"⚡ Model compile edildi (GPU optimizasyonu aktif)", flush=True)
+            else:
+                print(f"⚠️  torch.compile mevcut değil (PyTorch 2.0+ gerekli)", flush=True)
+        except Exception as e:
+            print(f"⚠️  Model compile edilemedi: {e}", flush=True)
+            # Compile yoksa devam et
+        
         # Training arguments
         output_dir = f"optuna_trials/trial_{trial.number}"
         os.makedirs(output_dir, exist_ok=True)
@@ -257,7 +268,7 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer, m
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=batch_size,
-            per_device_eval_batch_size=min(batch_size * 4, 8),  # Eval'da daha büyük batch (gradient yok, hızlı)
+            per_device_eval_batch_size=min(batch_size * 4, 32),  # 79GB VRAM ile eval'da çok daha büyük batch
             gradient_accumulation_steps=gradient_accumulation_steps,
             learning_rate=learning_rate,
             lr_scheduler_type="cosine",
@@ -271,6 +282,12 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer, m
             bf16=True,
             report_to="none",
             load_best_model_at_end=False,
+            # DataLoader optimizasyonları (200GB RAM ile agresif ayarlar)
+            dataloader_num_workers=12,  # 200GB RAM ile daha fazla paralel loading
+            dataloader_pin_memory=True,  # GPU'ya daha hızlı transfer
+            dataloader_prefetch_factor=4,  # Daha fazla prefetch (RAM yeterli)
+            # Torch compile için
+            torch_compile=False,  # Zaten manuel compile yaptık
         )
         
         # Metrics callback

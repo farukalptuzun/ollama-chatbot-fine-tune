@@ -49,6 +49,20 @@ else
     echo "   Torch ve transformers gibi büyük paketler kuruluyor..."
     pip install -r requirements.txt
     echo "✅ Tüm paketler kuruldu"
+    
+    # PyTorch versiyon kontrolü
+    echo ""
+    echo "🔍 PyTorch versiyonu kontrol ediliyor..."
+    PYTHON_CODE="import torch; print(torch.__version__); print('OK' if hasattr(torch, 'compile') else 'WARNING')"
+    PYTHON_OUTPUT=$(python3 -c "$PYTHON_CODE" 2>&1)
+    if echo "$PYTHON_OUTPUT" | grep -q "WARNING"; then
+        echo "⚠️  PyTorch 2.0+ bulunamadı veya torch.compile mevcut değil!"
+        echo "   Model compile optimizasyonu çalışmayacak."
+        echo "   Güncellemek için: pip install --upgrade torch>=2.0.0"
+    else
+        TORCH_VERSION=$(echo "$PYTHON_OUTPUT" | head -1)
+        echo "✅ PyTorch $TORCH_VERSION - torch.compile mevcut (GPU optimizasyonu aktif)"
+    fi
 fi
 echo ""
 

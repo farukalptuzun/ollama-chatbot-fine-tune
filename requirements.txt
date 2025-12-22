@@ -1,3 +1,6 @@
+# PyTorch 2.0+ gerekli (torch.compile için)
+# CUDA için: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# CPU için: pip install torch torchvision torchaudio
 torch>=2.0.0
 transformers>=4.35.0
 datasets>=2.14.0
