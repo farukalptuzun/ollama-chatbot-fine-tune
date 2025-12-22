@@ -257,7 +257,7 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer, m
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=batch_size,
-            per_device_eval_batch_size=batch_size,
+            per_device_eval_batch_size=min(batch_size * 4, 8),  # Eval'da daha büyük batch (gradient yok, hızlı)
             gradient_accumulation_steps=gradient_accumulation_steps,
             learning_rate=learning_rate,
             lr_scheduler_type="cosine",
@@ -265,7 +265,7 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer, m
             weight_decay=weight_decay,
             num_train_epochs=num_epochs,
             logging_steps=10,
-            eval_steps=100,  # Daha az evaluation (optimizasyon)
+            eval_steps=500,  # Daha az evaluation (optimizasyon - 5x daha hızlı)
             eval_strategy="steps",  # Yeni transformers versiyonunda evaluation_strategy yerine eval_strategy
             save_strategy="no",  # Disk alanı tasarrufu için
             bf16=True,
@@ -429,7 +429,7 @@ def main():
     parser.add_argument("--study_name", type=str, default="llama3_8b_optimization", help="Optuna study adı")
     parser.add_argument("--timeout", type=int, default=None, help="Timeout (saniye)")
     parser.add_argument("--max_train_samples", type=int, default=None, help="Eğitim için maksimum örnek sayısı (hızlandırma için, None=tümü)")
-    parser.add_argument("--max_val_samples", type=int, default=None, help="Validation için maksimum örnek sayısı (hızlandırma için, None=tümü)")
+    parser.add_argument("--max_val_samples", type=int, default=20000, help="Validation için maksimum örnek sayısı (hızlandırma için, default=20000)")
     
     args = parser.parse_args()
     
@@ -440,8 +440,7 @@ def main():
     print(f"   Study Adı: {args.study_name}", flush=True)
     if args.max_train_samples:
         print(f"   Max Train Samples: {args.max_train_samples}", flush=True)
-    if args.max_val_samples:
-        print(f"   Max Val Samples: {args.max_val_samples}", flush=True)
+    print(f"   Max Val Samples: {args.max_val_samples} (default, hızlandırma için)", flush=True)
     
     # Veri yükle
     train_data, val_data, test_data = load_and_prepare_data(args.dataset)
@@ -456,7 +455,7 @@ def main():
     print(f"🤖 Model yükleniyor (sadece bir kez): {MODEL_NAME}", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,  # torch_dtype yerine dtype kullanılıyor (yeni API)
         device_map="auto",
     )
     # Başlangıç ağırlıklarını sakla (her trial'da reset için)
