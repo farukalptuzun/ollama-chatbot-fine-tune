@@ -20,10 +20,12 @@ from transformers import (
     TrainingArguments,
     DataCollatorForLanguageModeling,
     EarlyStoppingCallback,
+    TrainerCallback,
 )
 from datasets import load_dataset, Dataset as HFDataset
 import optuna
 from optuna.trial import TrialState
+from optuna.pruners import MedianPruner
 from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 import warnings
@@ -39,10 +41,14 @@ print(f"📱 Kullanılan cihaz: {DEVICE}", flush=True)
 # Metrikleri saklamak için global değişkenler
 METRICS_HISTORY = []
 
+# Tokenization cache (seq_len -> tokenized datasets)
+TOKENIZATION_CACHE = {}
 
-class MetricsCallback:
+
+class MetricsCallback(TrainerCallback):
     """Eğitim sırasında metrikleri toplamak için callback"""
     def __init__(self):
+        super().__init__()
         self.train_losses = []
         self.eval_losses = []
         self.perplexities = []
@@ -65,6 +71,27 @@ class MetricsCallback:
             'min_perplexity': min(self.perplexities) if self.perplexities else None,
             'avg_perplexity': np.mean(self.perplexities) if self.perplexities else None,
         }
+
+
+class OptunaPruningCallback(TrainerCallback):
+    """Optuna pruning için callback - kötü trial'ları erken durdurur"""
+    def __init__(self, trial: optuna.Trial):
+        super().__init__()
+        self.trial = trial
+        
+    def on_evaluate(self, args, state, control, logs=None, **kwargs):
+        if logs and 'eval_loss' in logs:
+            # Objective değeri: perplexity (eval_loss'ten hesaplanır)
+            eval_loss = logs['eval_loss']
+            perplexity = math.exp(eval_loss)
+            
+            # Trial'a rapor ver (perplexity'yi minimize etmek istiyoruz)
+            self.trial.report(perplexity, state.global_step)
+            
+            # Pruning kontrolü
+            if self.trial.should_prune():
+                print(f"⚠️  Trial {self.trial.number} pruning yapılıyor (step {state.global_step})", flush=True)
+                control.should_training_stop = True
 
 
 def load_and_prepare_data(dataset_path: str, test_size: float = 0.2, val_size: float = 0.1):
@@ -97,8 +124,13 @@ def load_and_prepare_data(dataset_path: str, test_size: float = 0.2, val_size: f
     return train_data, val_data, test_data
 
 
-def tokenize_dataset(dataset, tokenizer, max_length: int):
-    """Dataset'i tokenize et"""
+def tokenize_dataset(dataset, tokenizer, max_length: int, cache_key: str = None):
+    """Dataset'i tokenize et (cache kullanarak)"""
+    # Cache kontrolü
+    if cache_key and cache_key in TOKENIZATION_CACHE:
+        print(f"📦 Tokenization cache'den yükleniyor: {cache_key}", flush=True)
+        return TOKENIZATION_CACHE[cache_key]
+    
     def tokenize(batch):
         return tokenizer(
             batch["text"],
@@ -113,6 +145,12 @@ def tokenize_dataset(dataset, tokenizer, max_length: int):
         remove_columns=dataset.column_names,
         desc="Tokenizing"
     )
+    
+    # Cache'e kaydet
+    if cache_key:
+        TOKENIZATION_CACHE[cache_key] = tokenized
+        print(f"💾 Tokenization cache'e kaydedildi: {cache_key}", flush=True)
+    
     return tokenized
 
 
@@ -169,7 +207,7 @@ def calculate_f1_score(model, tokenizer, test_dataset, max_samples: int = 100):
     return f1, precision, recall, accuracy
 
 
-def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer):
+def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer, model, initial_state_dict, max_train_samples=None, max_val_samples=None):
     """Optuna objective fonksiyonu - her trial için eğitim yapar ve metrikleri döner"""
     
     # Hiperparametre önerileri
@@ -191,17 +229,26 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer):
     print(f"   Epochs: {num_epochs}", flush=True)
     
     try:
-        # Dataset'i tokenize et
-        train_tokenized = tokenize_dataset(train_data, tokenizer, seq_len)
-        val_tokenized = tokenize_dataset(val_data, tokenizer, seq_len)
-        test_tokenized = tokenize_dataset(test_data, tokenizer, seq_len)
+        # Dataset subset (hızlandırma için)
+        train_subset = train_data.select(range(min(max_train_samples, len(train_data)))) if max_train_samples else train_data
+        val_subset = val_data.select(range(min(max_val_samples, len(val_data)))) if max_val_samples else val_data
         
-        # Model yükle
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        )
+        # Dataset'i tokenize et (cache kullanarak)
+        cache_key_train = f"train_{seq_len}_{len(train_subset)}"
+        cache_key_val = f"val_{seq_len}_{len(val_subset)}"
+        cache_key_test = f"test_{seq_len}"
+        train_tokenized = tokenize_dataset(train_subset, tokenizer, seq_len, cache_key=cache_key_train)
+        val_tokenized = tokenize_dataset(val_subset, tokenizer, seq_len, cache_key=cache_key_val)
+        test_tokenized = tokenize_dataset(test_data, tokenizer, seq_len, cache_key=cache_key_test)
+        
+        # Model'i başlangıç durumuna reset et (her trial için temiz başlangıç)
+        print(f"🔄 Model başlangıç durumuna reset ediliyor...", flush=True)
+        # load_state_dict otomatik olarak tensor'ları doğru cihazlara yerleştirir
+        model.load_state_dict(initial_state_dict, strict=False)
+        
+        # Model'e gradient checkpointing ekle (bellek tasarrufu için)
+        if hasattr(model, 'gradient_checkpointing_enable'):
+            model.gradient_checkpointing_enable()
         
         # Training arguments
         output_dir = f"optuna_trials/trial_{trial.number}"
@@ -218,8 +265,8 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer):
             weight_decay=weight_decay,
             num_train_epochs=num_epochs,
             logging_steps=10,
-            eval_steps=50,
-            evaluation_strategy="steps",
+            eval_steps=100,  # Daha az evaluation (optimizasyon)
+            eval_strategy="steps",  # Yeni transformers versiyonunda evaluation_strategy yerine eval_strategy
             save_strategy="no",  # Disk alanı tasarrufu için
             bf16=True,
             report_to="none",
@@ -229,6 +276,9 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer):
         # Metrics callback
         metrics_callback = MetricsCallback()
         
+        # Optuna pruning callback
+        pruning_callback = OptunaPruningCallback(trial)
+        
         # Trainer
         trainer = Trainer(
             model=model,
@@ -237,7 +287,7 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer):
             eval_dataset=val_tokenized,
             tokenizer=tokenizer,
             data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
-            callbacks=[metrics_callback],
+            callbacks=[metrics_callback, pruning_callback],
         )
         
         # Eğitim
@@ -287,8 +337,7 @@ def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer):
         print(f"   F1 Score: {f1:.4f}", flush=True)
         print(f"   Accuracy: {accuracy:.4f}", flush=True)
         
-        # Model'i temizle (bellek tasarrufu)
-        del model
+        # Trainer'ı temizle (model'i silmiyoruz, tekrar kullanacağız)
         del trainer
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
         
@@ -379,6 +428,8 @@ def main():
     parser.add_argument("--output", type=str, default="optuna_results.json", help="JSON çıktı dosyası")
     parser.add_argument("--study_name", type=str, default="llama3_8b_optimization", help="Optuna study adı")
     parser.add_argument("--timeout", type=int, default=None, help="Timeout (saniye)")
+    parser.add_argument("--max_train_samples", type=int, default=None, help="Eğitim için maksimum örnek sayısı (hızlandırma için, None=tümü)")
+    parser.add_argument("--max_val_samples", type=int, default=None, help="Validation için maksimum örnek sayısı (hızlandırma için, None=tümü)")
     
     args = parser.parse_args()
     
@@ -387,6 +438,10 @@ def main():
     print(f"   Trial Sayısı: {args.n_trials}", flush=True)
     print(f"   Çıktı Dosyası: {args.output}", flush=True)
     print(f"   Study Adı: {args.study_name}", flush=True)
+    if args.max_train_samples:
+        print(f"   Max Train Samples: {args.max_train_samples}", flush=True)
+    if args.max_val_samples:
+        print(f"   Max Val Samples: {args.max_val_samples}", flush=True)
     
     # Veri yükle
     train_data, val_data, test_data = load_and_prepare_data(args.dataset)
@@ -397,15 +452,28 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    # Model'i bir kez yükle ve başlangıç state_dict'ini sakla
+    print(f"🤖 Model yükleniyor (sadece bir kez): {MODEL_NAME}", flush=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    # Başlangıç ağırlıklarını sakla (her trial'da reset için)
+    initial_state_dict = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+    print(f"✅ Model yüklendi ve başlangıç durumu saklandı", flush=True)
+    
     # Objective fonksiyonunu hazırla
     def objective_wrapper(trial):
-        return objective(trial, train_data, val_data, test_data, tokenizer)
+        return objective(trial, train_data, val_data, test_data, tokenizer, model, initial_state_dict, 
+                        args.max_train_samples, args.max_val_samples)
     
-    # Optuna study oluştur
+    # Optuna study oluştur (pruning ile)
     study = optuna.create_study(
         study_name=args.study_name,
         direction="minimize",  # Objective değerini minimize et
         sampler=optuna.samplers.TPESampler(seed=42),
+        pruner=MedianPruner(n_startup_trials=3, n_warmup_steps=50),  # Pruning aktif
     )
     
     print(f"\n🎯 Optuna optimizasyonu başlatılıyor...", flush=True)
