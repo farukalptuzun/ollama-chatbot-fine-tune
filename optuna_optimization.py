@@ -213,14 +213,15 @@ def calculate_f1_score(model, tokenizer, test_dataset, max_samples: int = 100):
 def objective(trial: optuna.Trial, train_data, val_data, test_data, tokenizer, model, initial_state_dict, max_train_samples=None, max_val_samples=None):
     """Optuna objective fonksiyonu - her trial için eğitim yapar ve metrikleri döner"""
     
-    # Hiperparametre önerileri (OOM önleme için agresif küçük batch'ler)
-    learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-    batch_size = trial.suggest_categorical("batch_size", [2, 4, 6])  # OOM önleme: agresif küçük batch'ler
-    gradient_accumulation_steps = trial.suggest_int("gradient_accumulation_steps", 1, 16)  # Daha yüksek aralık
-    warmup_ratio = trial.suggest_float("warmup_ratio", 0.01, 0.1)
-    weight_decay = trial.suggest_float("weight_decay", 0.01, 0.3)
-    seq_len = trial.suggest_categorical("seq_len", [2048])  # OOM önleme: 4096 bellek kullanımını 2x artırır
-    num_epochs = trial.suggest_int("num_epochs", 1, 1)  # OOM önleme: sadece 1 epoch
+    # Hiperparametre önerileri (Trend bulma için optimize edilmiş - 2M örnekle transfer edilebilir parametre aralığı)
+    # NOT: Optuna'nın amacı en iyi final loss değil, 2M eğitimde iyi çalışacak parametre ARALIĞINI bulmak
+    learning_rate = trial.suggest_float("learning_rate", 1e-5, 5e-5, log=True)  # Daraltılmış: 2M için ideal aralık
+    batch_size = 2  # SABİT: Trend bulma için yeterli, 2M'de artırılır
+    gradient_accumulation_steps = trial.suggest_int("grad_acc", 2, 6)  # Daraltılmış: 2-6 arası yeterli
+    warmup_ratio = trial.suggest_float("warmup_ratio", 0.01, 0.05)  # Daraltılmış: 0.01-0.05 ideal aralık
+    weight_decay = trial.suggest_float("weight_decay", 0.0, 0.1)  # Daraltılmış: 0.0-0.1 yeterli
+    seq_len = 1024  # SABİT: 2048 Optuna için gereksiz pahalı, trend 1024'te de görülür
+    num_epochs = 1  # SABİT: Trend bulma için 1 epoch yeterli
     
     print(f"\n🔬 Trial {trial.number} başlatılıyor...", flush=True)
     print(f"   Learning Rate: {learning_rate:.2e}", flush=True)
