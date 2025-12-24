@@ -1,11 +1,42 @@
+# OPTUNA VERİLERİLERİNDEN DÖNEN VERİLER 
 E01:
-  seq_len: 1024  # Optuna ile uyumlu (Optuna 1024 ile optimize etti, 4096 attention cost 4x artırır)
+  seq_len: 1024
   lr_schedule: cosine
-  learning_rate: 1.5e-5  # Optuna'dan %20 düşürülmüş (2M için güvenli)
-  warmup_ratio: 0.03
-  weight_decay: 0.05  # Optuna sonuçları: ~0.05 (0.1 LLaMA için agresif, uzun training'de underfitting yapar)
+  learning_rate: 1.5e-5
+  warmup_ratio: 0.035
+  weight_decay: 0.05
   rope_scaling: null
-  batch_size: 6  # Optuna effective batch=12'yi koruyor (6*2=12)
-  grad_acc: 2  # Optuna'dan transfer: batch=2, grad_acc=6 → batch=6, grad_acc=2
-  num_epochs: 2  # Final training için 2 epoch
 
+  batch_size: 6
+  grad_acc: 2
+  num_epochs: 2
+
+  eval_split_ratio: 0.01
+  max_eval_samples: 2000
+  eval_steps: 2000
+  save_steps: 2000
+  save_total_limit: 2
+  logging_steps: 50
+  seed: 42
+
+# DAHA HIZLI EĞİTİM İÇİN
+E01_fast:
+  seq_len: 1024
+  lr_schedule: cosine
+  learning_rate: 1.5e-5
+  warmup_ratio: 0.03
+  weight_decay: 0.05
+  rope_scaling: null
+
+  batch_size: 6
+  grad_acc: 2
+  num_epochs: 2
+
+  # 🔥 en büyük hız kazanımı burada
+  eval_split_ratio: 0.005        # %1 → %0.5
+  max_eval_samples: 1000         # 2000 → 1000
+  eval_steps: 6000               # 2000 → 6000
+  save_steps: 6000               # 2000 → 6000
+  save_total_limit: 2
+  logging_steps: 100
+  seed: 42
