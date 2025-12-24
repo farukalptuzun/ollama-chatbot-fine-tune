@@ -83,6 +83,13 @@ def tokenize(batch):
 ds = ds.map(tokenize, batched=True, remove_columns=ds.column_names)
 print(f"✅ {len(ds)} örnek tokenize edildi")
 
+# Dataset split (train/eval)
+print(f"📊 Dataset split ediliyor (train/eval)...")
+ds = ds.train_test_split(test_size=0.01, seed=42)
+train_ds = ds["train"]
+eval_ds = ds["test"]
+print(f"✅ Train: {len(train_ds)}, Eval: {len(eval_ds)}")
+
 # ---------- model ----------
 print(f"🤖 Model yükleniyor: {args.model_name}")
 try:
@@ -104,17 +111,16 @@ if cfg.get("rope_scaling") is not None:
     }
 
 # ---------- batch hesap ----------
-world_size = int(os.environ.get("WORLD_SIZE", 1))
-tokens_per_step = cfg["tokens_per_step"]
-per_device_bs = 1
-grad_accum = max(1, tokens_per_step // (cfg["seq_len"] * world_size))
+# Optuna uyumlu: direkt batch_size ve grad_acc kullan (tokens_per_step mantığı kaldırıldı)
+per_device_bs = cfg.get("batch_size", 6)
+grad_accum = cfg.get("grad_acc", 2)
 
 # ---------- training args ----------
 out_dir = f"models/checkpoints/{args.run_id}"
 os.makedirs(out_dir, exist_ok=True)
 
 # YAML'dan gelen sayısal değerleri float'a çevir
-peak_lr = float(cfg["peak_lr"])
+learning_rate = float(cfg.get("learning_rate", cfg.get("peak_lr", 1.5e-5)))  # learning_rate tercih edilir, yoksa peak_lr fallback
 warmup_ratio = float(cfg["warmup_ratio"])
 weight_decay = float(cfg["weight_decay"])
 
@@ -124,28 +130,39 @@ print(f"   Model: {args.model_name}")
 print(f"   Seq Len: {cfg['seq_len']}")
 print(f"   Batch Size: {per_device_bs}")
 print(f"   Grad Accum: {grad_accum}")
-print(f"   Learning Rate: {peak_lr}")
+print(f"   Effective Batch: {per_device_bs * grad_accum}")
+print(f"   Learning Rate: {learning_rate}")
+print(f"   Epochs: {cfg.get('num_epochs', 2)}")
 print(f"   Output: {out_dir}")
 
 training_args = TrainingArguments(
     output_dir=out_dir,
     per_device_train_batch_size=per_device_bs,
     gradient_accumulation_steps=grad_accum,
-    learning_rate=peak_lr,
+    learning_rate=learning_rate,
     lr_scheduler_type=cfg["lr_schedule"],
     warmup_ratio=warmup_ratio,
     weight_decay=weight_decay,
-    num_train_epochs=1,
-    logging_steps=10,
-    save_steps=500,
+    num_train_epochs=cfg.get("num_epochs", 2),
     bf16=True,
+    gradient_checkpointing=True,
+    logging_steps=50,
+    evaluation_strategy="steps",
+    eval_steps=2000,
+    save_strategy="steps",
+    save_steps=2000,
+    save_total_limit=2,
+    load_best_model_at_end=True,
+    metric_for_best_model="eval_loss",
+    greater_is_better=False,
     report_to="none",
 )
 
 trainer = Trainer(
     model=model,
     args=training_args,
-    train_dataset=ds,
+    train_dataset=train_ds,
+    eval_dataset=eval_ds,
     tokenizer=tokenizer,
     data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
 )

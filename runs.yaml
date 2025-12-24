@@ -1,11 +1,11 @@
 E01:
-  tokenizer: unigram
-  vocab_size: 64000
-  seq_len: 4096
+  seq_len: 1024  # Optuna ile uyumlu (Optuna 1024 ile optimize etti, 4096 attention cost 4x artırır)
   lr_schedule: cosine
-  peak_lr: 3e-4
-  warmup_ratio: 0.02
-  weight_decay: 0.1
+  learning_rate: 1.5e-5  # Optuna'dan %20 düşürülmüş (2M için güvenli)
+  warmup_ratio: 0.03
+  weight_decay: 0.05  # Optuna sonuçları: ~0.05 (0.1 LLaMA için agresif, uzun training'de underfitting yapar)
   rope_scaling: null
-  tokens_per_step: 1048576
+  batch_size: 6  # Optuna effective batch=12'yi koruyor (6*2=12)
+  grad_acc: 2  # Optuna'dan transfer: batch=2, grad_acc=6 → batch=6, grad_acc=2
+  num_epochs: 2  # Final training için 2 epoch
 
