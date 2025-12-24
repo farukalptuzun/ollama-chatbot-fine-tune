@@ -17,6 +17,7 @@ from transformers import (
     DataCollatorForLanguageModeling,
     set_seed,
 )
+from transformers.trainer_utils import get_last_checkpoint
 print("✅ transformers yüklendi", flush=True)
 
 from datasets import load_dataset
@@ -146,6 +147,9 @@ num_epochs = int(cfg.get("num_epochs", 2))  # TrainingArguments int bekler
 eval_steps = int(cfg.get("eval_steps", 2000))
 save_steps = int(cfg.get("save_steps", 2000))
 logging_steps = int(cfg.get("logging_steps", 50))
+max_steps = cfg.get("max_steps", None)  # max_steps varsa epoch yerine kullanılır
+if max_steps:
+    max_steps = int(max_steps)
 
 print("🚀 Eğitim başlıyor...")
 print(f"   Run ID: {args.run_id}")
@@ -157,7 +161,10 @@ print(f"   Effective Batch: {per_device_bs * grad_accum}")
 print(f"   Learning Rate: {learning_rate}")
 print(f"   Warmup Ratio: {warmup_ratio}")
 print(f"   Weight Decay: {weight_decay}")
-print(f"   Epochs: {num_epochs}")
+if max_steps:
+    print(f"   Max Steps: {max_steps} (epoch override)")
+else:
+    print(f"   Epochs: {num_epochs}")
 print(f"   Eval Steps: {eval_steps}")
 print(f"   Save Steps: {save_steps}")
 print(f"   Output: {out_dir}")
@@ -170,7 +177,8 @@ training_args = TrainingArguments(
     lr_scheduler_type=cfg["lr_schedule"],
     warmup_ratio=warmup_ratio,
     weight_decay=weight_decay,
-    num_train_epochs=num_epochs,
+    num_train_epochs=num_epochs if not max_steps else None,  # max_steps varsa epoch override edilir
+    max_steps=max_steps,  # max_steps varsa epoch yerine kullanılır
 
     bf16=True,
     gradient_checkpointing=True,
@@ -180,7 +188,7 @@ training_args = TrainingArguments(
 
     logging_steps=logging_steps,
 
-    evaluation_strategy="steps",
+    eval_strategy="steps",  # Yeni transformers versiyonunda evaluation_strategy yerine eval_strategy
     eval_steps=eval_steps,
 
     save_strategy="steps",
@@ -210,7 +218,14 @@ trainer = Trainer(
     data_collator=data_collator,
 )
 
-trainer.train(resume_from_checkpoint=True)  # Colab/SSH koparsa eğitim devam eder
+# Checkpoint kontrolü: varsa devam et, yoksa sıfırdan başla
+checkpoint = get_last_checkpoint(out_dir)
+if checkpoint:
+    print(f"📂 Checkpoint bulundu, devam ediliyor: {checkpoint}")
+else:
+    print("🆕 Yeni eğitim başlatılıyor (checkpoint yok)")
+
+trainer.train(resume_from_checkpoint=checkpoint)  # Checkpoint varsa devam eder, yoksa None = sıfırdan başlar
 trainer.save_model(out_dir)
 
 print(f"✅ RUN {args.run_id} tamamlandı → {out_dir}")

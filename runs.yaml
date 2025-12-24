@@ -40,3 +40,25 @@ E01_fast:
   save_total_limit: 2
   logging_steps: 100
   seed: 42
+
+# 18-24 SAAT EĞİTİM İÇİN (270 saat → ~20 saat)
+E01_1day:
+  seq_len: 768                   # 1024 → 768 (%25-30 hız kazanımı)
+  lr_schedule: cosine
+  learning_rate: 1.5e-5          # LR sabit tut (kalite korunur)
+  warmup_ratio: 0.03
+  weight_decay: 0.05
+  rope_scaling: null
+
+  batch_size: 8                  # 6 → 8 (H100 80GB yeterli)
+  grad_acc: 2
+  num_epochs: 1                  # 2 → 1 (×0.5 süre)
+  max_steps: 40000               # Epoch yerine step-based (40K step ≈ 17 saat)
+
+  eval_split_ratio: 0.005        # Küçük eval seti
+  max_eval_samples: 1000
+  eval_steps: 8000               # Daha az evaluation
+  save_steps: 8000
+  save_total_limit: 2
+  logging_steps: 100
+  seed: 42
