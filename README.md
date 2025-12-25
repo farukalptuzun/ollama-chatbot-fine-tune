@@ -661,11 +661,6 @@ Bu proje MIT lisansı altında lisanslanmıştır.
 
 ## 🙏 Teşekkürler
 
-- HuggingFace ekibine Transformers kütüphanesi için
-- Meta AI'ya Llama modelleri için
-- Optuna ekibine hiperparametre optimizasyonu için
-- Google Colab ekibine H100 GPU erişimi için
-
 ---
 
 ⭐ Bu projeyi beğendiyseniz yıldız vermeyi unutmayın!
