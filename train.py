@@ -16,6 +16,7 @@ from transformers import (
     TrainingArguments,
     DataCollatorForLanguageModeling,
     set_seed,
+    TrainerCallback,
 )
 from transformers.trainer_utils import get_last_checkpoint
 print("✅ transformers yüklendi", flush=True)
@@ -177,7 +178,8 @@ training_args = TrainingArguments(
     lr_scheduler_type=cfg["lr_schedule"],
     warmup_ratio=warmup_ratio,
     weight_decay=weight_decay,
-    num_train_epochs=num_epochs if not max_steps else None,  # max_steps varsa epoch override edilir
+    # max_steps varsa num_train_epochs göz ardı edilir, ama None olamaz
+    num_train_epochs=1 if max_steps else num_epochs,  # max_steps varsa 1 yap (max_steps önce gelir)
     max_steps=max_steps,  # max_steps varsa epoch yerine kullanılır
 
     bf16=True,
@@ -209,6 +211,45 @@ data_collator = DataCollatorForLanguageModeling(
     pad_to_multiple_of=8,
 )
 
+# Epoch ve training checkpoint callback (epoch bitişi VE max_steps tamamlanınca kaydet)
+class CheckpointCallback(TrainerCallback):
+    def __init__(self, output_dir, tokenizer):
+        self.output_dir = output_dir
+        self.tokenizer = tokenizer
+    
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        """Her epoch bitişinde checkpoint kaydet"""
+        epoch = int(state.epoch)
+        epoch_dir = os.path.join(self.output_dir, f"epoch-{epoch}-final")
+        
+        if model is not None:
+            print(f"\n💾 Epoch {epoch} tamamlandı, checkpoint kaydediliyor: {epoch_dir}", flush=True)
+            os.makedirs(epoch_dir, exist_ok=True)
+            model.save_pretrained(epoch_dir)
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(epoch_dir)
+            print(f"✅ Epoch {epoch} checkpoint kaydedildi: {epoch_dir}\n", flush=True)
+        
+        return control
+    
+    def on_train_end(self, args, state, control, model=None, **kwargs):
+        """Training bitişinde (max_steps veya epoch) checkpoint kaydet"""
+        # Epoch bitişi değilse (max_steps tamamlandıysa) kaydet
+        if state.global_step > 0:
+            final_dir = os.path.join(self.output_dir, f"final-step-{state.global_step}")
+            if model is not None:
+                print(f"\n💾 Training tamamlandı (step {state.global_step}), final checkpoint kaydediliyor: {final_dir}", flush=True)
+                os.makedirs(final_dir, exist_ok=True)
+                model.save_pretrained(final_dir)
+                if self.tokenizer is not None:
+                    self.tokenizer.save_pretrained(final_dir)
+                print(f"✅ Final checkpoint kaydedildi: {final_dir}\n", flush=True)
+        
+        return control
+
+# Checkpoint callback'i oluştur
+checkpoint_callback = CheckpointCallback(out_dir, tokenizer)
+
 trainer = Trainer(
     model=model,
     args=training_args,
@@ -216,6 +257,7 @@ trainer = Trainer(
     eval_dataset=eval_ds,
     tokenizer=tokenizer,
     data_collator=data_collator,
+    callbacks=[checkpoint_callback],  # Epoch ve final checkpoint callback
 )
 
 # Checkpoint kontrolü: varsa devam et, yoksa sıfırdan başla
